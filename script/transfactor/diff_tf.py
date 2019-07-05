@@ -24,7 +24,7 @@ def tf_diff_stats(tf_file, diff_dir, outdir):
             comp_diff_dfs.append(diff_df)
         comp_diff_df = pd.concat(comp_diff_dfs)
         diff_dfs.append(comp_diff_df)
-    diff_df = pd.concat(diff_dfs, axis=1, sort=False)
+    diff_df = pd.concat(diff_dfs, axis=1)
     diff_df_cols = diff_df.columns
     tf_df = pd.read_table(tf_file, index_col=2)
     tf_diff_df = diff_df.reindex(tf_df.index)

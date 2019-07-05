@@ -26,28 +26,31 @@ def helpMessage() {
       --anno_file                   Gene annotation file
       --pathway_db                  KEGG pathway database
     
-    Optional ref files
-      --transfactor                 Transfactor annotation
-      --split_bed                   Split bed file for snp calling
-
     Mandatory arguments:
       --proj_name                   Project name for output name
       --reads                       Path to input data (must be surrounded with quotes)
       --sample_group                Sample vs Group file
+      --outdir                      Path to analysis results 
+
+    Analyisis control:
+      --ppi                         Run ppi analysis
+      --transfactor                 Transfactor annotation
+      --kegg_pathway                Run kegg_pathway analysis
+      --rmats                       Run rmats
 
     Other options:
       --lib_type                    RNAseq library type, default is "unstranded"
       --exp_diff_pval               Expression differential analysis p.adjust cutoff
       --exp_lgfc                    Expression differential analysis log2foldchange cutoff
-      --contrast                    Differential analysis compare
-      --outdir                      Path to store index files, default is directory store fasta
+      --contrast                    Differential analysis compare      
       --snp                         Apply snp analysis
       --snp_quality                 Quality cutoff for snp analysis
       --snp_depth                   Depth cutoff for snp analysis
-      --ppi                         PPI link file
+      --ppi_link                    PPI link file
       --proten2gene                 PPI protein id <-> gene id map file
+      --transfactor_anno            Transfactor annotation
       --ref_flat                    RefFlat format annotation
-      --kegg_pathway                Run kegg_pathway analysis
+      --split_bed                   Split bed file for snp calling
 
     """.stripIndent()
 }
@@ -84,7 +87,12 @@ params.bed12 = false
 params.kegg_abbr = false
 params.kegg_backgroud = false
 params.transfactor = false
+params.transfactor_anno = 'none'
 params.snp = false
+params.rmats = false
+params.ppi = false
+params.ppi_link = 'none'
+params.proten2gene = 'none'
 // 30 for real data
 params.snp_quality = 30
 // 5 for read data
@@ -181,7 +189,7 @@ process fastp {
     output:
     file "*trimmed.R*.fq.gz" into trimmed_reads, kallisto_reads
     file "${name}.json" into fastp_json
-    file "${name}.html"
+    file "${name}.html" into fastp_html
 
     cpus = 4
 
@@ -508,7 +516,7 @@ process novel_gene_annotation {
     file gene2tr from gene2tr_anno
     
     output:
-    file "novel.gene.annotation.csv"
+    file "novel.gene.annotation.csv" into novel_gene_out
     
     script:
     """
@@ -662,7 +670,7 @@ process diff_exp_summary {
     file sample_group from sample_group
 
     output:
-    file "Diff.gene*"
+    file "Diff.gene*" into diff_summary_out
     file "cluster_data"
     
     script:
@@ -705,7 +713,7 @@ process go_analysis {
     output:
     file "${compare}/${compare}.${reg}.go.enrichment.txt" into go_out
     file "${compare}/DAG/*" into dag_plot
-    file "${compare}/${compare}.${reg}.go.enrichment.barplot*"
+    file "${compare}/${compare}.${reg}.go.enrichment.barplot*" into go_barplot
     
     script:
     (compare, reg) = go_compare.split(';')
@@ -788,7 +796,7 @@ if (params.kegg_pathway) {
         file "diff/*" from pathway_compare.collect()
         
         output:
-        file "${compare_reg}.pathway"
+        file "${compare_reg}.pathway" into kegg_pathway_out
         
         script:
         compare_reg = kegg_out.baseName - '.kegg.enrichment'
@@ -808,64 +816,64 @@ if (params.kegg_pathway) {
 /*
 * Diff gene ppi analysis
 */
-if (params.ppi && params.proten2gene) {
-    ppi_anno = check_ref_exist(params.ppi, 'PPI')
-    proten2gene = check_ref_exist(params.proten2gene, 'proten2gene id map')
-    process ppi_analysis {
+process ppi_analysis {
 
-        tag "${compare}"
+    tag "${compare}"
 
-        publishDir "${params.outdir}/${params.proj_name}/result/ppi/", mode: 'copy'
+    publishDir "${params.outdir}/${params.proj_name}/result/ppi/", mode: 'copy'
 
-        input:
-        file compare from diff_out_ppi
-        file ppi_anno from ppi_anno
-        file proten2gene from proten2gene
-        file anno_file from anno_file
-        
-        output:
-        file "${compare}.ppi.csv"
-        
-        script:
-        """
-        pipenv run python ${script_dir}/ppi/diff_reg_list.py \\
-            --diff-dir ${compare} \\
-            --outfile ${compare}.deff_reg.txt 
+    input:
+    file compare from diff_out_ppi
+    file ppi_anno from file(params.ppi_link)
+    file proten2gene from file(params.proten2gene)
+    file anno_file from anno_file
 
-        pipenv run python ${script_dir}/ppi/diff_gene_ppi.py \\
-            --ppi-link ${ppi_anno} \\
-            --proten2gene ${proten2gene} \\
-            --diff-gene-list ${compare}.deff_reg.txt \\
-            --outfile ${compare}.ppi.csv \\
-            --anno-file ${anno_file}
-        """
-    }
+    when:
+    params.ppi
+
+    output:
+    file "${compare}.ppi.csv" into ppi_out
+    
+    script:
+    """
+    pipenv run python ${script_dir}/ppi/diff_reg_list.py \\
+        --diff-dir ${compare} \\
+        --outfile ${compare}.deff_reg.txt 
+
+    pipenv run python ${script_dir}/ppi/diff_gene_ppi.py \\
+        --ppi-link ${ppi_anno} \\
+        --proten2gene ${proten2gene} \\
+        --diff-gene-list ${compare}.deff_reg.txt \\
+        --outfile ${compare}.ppi.csv \\
+        --anno-file ${anno_file}
+    """
 }
+
 
 /*
 * transfactor in diff genes
 */
-if (params.transfactor) {
-    process transfactor_anno {
+process transfactor_anno {
 
-        publishDir "${params.outdir}/${params.proj_name}/result/transfactor/", mode: 'copy'
+    publishDir "${params.outdir}/${params.proj_name}/result/transfactor/", mode: 'copy'
 
-        input:
-        file 'diff/*' from diff_tf.collect()
-        file tf_file from file(params.transfactor)
-        
-        output:
-        file "Diff_TF_number.stats.csv"
-        file "TF_in_diff_compare.stats.csv"
-        
-        script:
-        """
-        pipenv run python ${script_dir}/transfactor/diff_tf.py \\
-            --tf-file ${tf_file} \\
-            --diff-dir ./diff \\
-            --outdir .
-        """
-    }
+    when:
+    params.transfactor
+
+    input:
+    file 'diff/*' from diff_tf.collect()
+    file tf_file from file(params.transfactor_anno)
+    
+    output:
+    file "*.stats.csv" into tf_stats
+    
+    script:
+    """
+    pipenv run python ${script_dir}/transfactor/diff_tf.py \\
+        --tf-file ${tf_file} \\
+        --diff-dir ./diff \\
+        --outdir .
+    """
 }
 
 
@@ -929,7 +937,7 @@ process genebody_coverage_plot {
     file "genebody_coverage/*" from genebody_coverage_results.collect()
 
     output:
-    file "genebody_coverage"
+    file "genebody_coverage" into genebody_coverage
 
 
     script:
@@ -975,7 +983,7 @@ process saturation_plot {
     file 'sequencing_saturation/*' from count_saturation.collect()
 
     output:
-    file "sequencing_saturation"
+    file "sequencing_saturation" into sequencing_saturation
 
     script:
     """
@@ -995,6 +1003,9 @@ process rmats {
     input:
     file each_compare from flat_rmats_compare
     file gtf from rmats_gtf
+
+    when:
+    params.rmats
 
     output:
     file "${each_compare}/*MATS.JC.txt" into rmats_jc_out
@@ -1022,13 +1033,13 @@ process rmats {
 }
 
 
-/*
-* snp
-*/
+/* *************************
+*********** snp ************
+****************************/
+fa_dict = file("${fasta_path}/${fasta.baseName}.dict")
 
 if (params.snp) {
-    // check fasta index
-    fa_dict = file("${fasta_path}/${fasta.baseName}.dict")
+    // check fasta index   
     fa_dict = check_ref_exist(fa_dict, 'fasta dict')
 
     // prepare split bed files
@@ -1036,269 +1047,325 @@ if (params.snp) {
         .fromPath("${params.split_bed}/genome/*bed")
         .ifEmpty { exit 1, "Cannot find any bed file in directory: ${params.split_bed}/genome\n!" }
         .into { haplotype_beds; combine_gvcf_beds }
-
-    /*
-    * Reads mark duplication and recalibration
-    */
-    process bam_remove_duplicate {
-        tag "${sample_name}"
-
-        publishDir "${params.outdir}/${params.proj_name}/data/bam/${sample_name}", mode: 'copy'
-
-        input:
-        file bam from bam_snp
-    
-        output:
-        file "${sample_name}.rmdup.bam" into br_rmdup_bam
-    
-        cpus = 8
-
-        script:
-        sample_name = bam.baseName - '.sorted'
-        """
-        samtools markdup -r -s \\
-            --threads ${task.cpus} \\
-            ${bam} \\
-            ${sample_name}.rmdup.bam
-        """
-    }
-
-    process SplitNCigarReads {
-
-        tag "${sample_name}"
-            
-        input:
-        file bam from br_rmdup_bam
-        file fasta from fasta
-        file fa_dict from fa_dict
-        file fai_idx from fai_idx
-        
-        output:
-        file "${sample_name}.SplitN.bam" into splitn_bam
-
-        cpus = 8
-        
-        script:
-        sample_name = bam.baseName - '.rmdup'
-        """
-        gatk SplitNCigarReads \\
-            --reference ${fasta} \\
-            --input ${bam} \\
-            --output ${sample_name}.SplitN.bam \\
-            --max-reads-in-memory 1000000  \\
-        """
-    }
-
-    /*
-    *  GATK HaplotypeCaller
-    */
-    process gatk_HaplotypeCaller {
-        tag "${sample_name}|${chr_name}"
-
-        input:
-        file bam from splitn_bam
-        each file(bed) from haplotype_beds
-        file refer from fasta
-        file refer_fai from fai_idx
-        file refer_dict from fa_dict    
-
-        output:
-        file "${sample_name}.${chr_name}.hc.g.vcf.gz" into sample_gvcf
-        file "${sample_name}.${chr_name}.hc.g.vcf.gz.tbi" into sample_gvcf_index
-        
-        cpus = 8
-
-        script:
-        sample_name = bam.baseName - '.SplitN'
-        chr_name = bed.baseName
-        """
-        gatk HaplotypeCaller  \\
-            --input ${bam} \\
-            --output ${sample_name}.${chr_name}.hc.g.vcf.gz \\
-            --reference ${refer} \\
-            --intervals ${bed} \\
-            --emit-ref-confidence GVCF \\
-            --read-filter AmbiguousBaseReadFilter \\
-            --read-filter MappingQualityReadFilter \\
-            --read-filter NonZeroReferenceLengthAlignmentReadFilter \\
-            --read-filter ProperlyPairedReadFilter \\
-            --minimum-mapping-quality 30         
-        """
-    }
-
-    /*
-    * GATK CombineGVCFs
-    */
-    process gatk_CombineGVCFs {
-        tag "Chrom: ${chr_name}"
-
-        publishDir "${params.outdir}/${params.proj_name}/data/snp/gvcf/", mode: 'copy'  
-
-        input:
-        file ('gvcf/*') from sample_gvcf.collect()
-        file ('gvcf/*') from sample_gvcf_index.collect()
-        each file(bed) from combine_gvcf_beds
-        file refer from fasta
-        file refer_fai from fai_idx
-        file refer_dict from fa_dict    
-        
-        output:
-        file "all_sample.${chr_name}.g.vcf.gz" into merged_sample_gvcf
-        file "all_sample.${chr_name}.g.vcf.gz.tbi" into merged_sample_gvcf_index
-        
-        script:
-        chr_name = bed.baseName
-        """
-        ls gvcf/*.${chr_name}.hc.g.vcf.gz > ${chr_name}.gvcf.list
-
-        gatk CombineGVCFs \\
-            --output all_sample.${chr_name}.g.vcf.gz \\
-            --reference ${refer} \\
-            --variant ${chr_name}.gvcf.list
-        """
-    }
-
-    /*
-    * GATK GenotypeGVCFs
-    */
-    process gatk_GenotypeGVCFs {
-        tag "Chrom: ${chr_name}"
-
-        publishDir "${params.outdir}/${params.proj_name}/data/snp/vcf/", mode: 'copy'
-
-        input:
-        file gvcf from merged_sample_gvcf
-        file gvcf_index from merged_sample_gvcf_index
-        file refer from fasta
-        file refer_fai from fai_idx
-        file refer_dict from fa_dict    
-        
-        output:
-        file "${vcf_prefix}.vcf.gz" into merged_sample_vcf
-        file "${vcf_prefix}.vcf.gz.tbi" into merged_sample_vcf_index
-        
-        script:
-        vcf_prefix = gvcf.baseName - '.g.vcf'
-        chr_name = vcf_prefix - 'all_sample.'
-        """
-        gatk GenotypeGVCFs \\
-            --reference ${refer} \\
-            --variant ${gvcf} \\
-            --output ${vcf_prefix}.vcf.gz
-        """
-    }
-
-    /*
-    * Concat vcf
-    */
-    process concat_vcf {
-
-        publishDir "${params.outdir}/${params.proj_name}/result/snp/", mode: 'copy'   
-
-        input:
-        file ('vcf/*') from merged_sample_vcf.collect()
-        file ('vcf/*') from merged_sample_vcf_index.collect()
-
-        output:
-        file "all_sample.raw.vcf.gz" into all_sample_raw_vcf
-        file "all_sample.raw.vcf.gz.tbi" into all_sample_raw_vcf_idx
-        
-        script:
-        """
-        bcftools concat \\
-            vcf/*.vcf.gz | \\
-            bgzip > all_sample.raw.vcf.gz
-
-        tabix -p vcf all_sample.raw.vcf.gz
-        """
-    }
-
-    /*
-    * Basic quality filter
-    */
-    process vcf_base_qual_filter {
-
-        publishDir "${params.outdir}/${params.proj_name}/result/snp/", mode: 'copy'   
-
-        input:
-        file raw_vcf from all_sample_raw_vcf
-        file raw_vcf_idx from all_sample_raw_vcf_idx
-        
-        output:
-        file "all_sample.hq.vcf.gz" into all_hq_vcf
-        file "all_sample.hq.vcf.gz.tbi" into all_hq_vcf_idx
-        
-        script:
-        """
-        bcftools filter -s LowQual -e '%QUAL<${params.snp_quality} || INFO/DP<${params.snp_depth}' \\
-            all_sample.raw.vcf.gz | \\
-            grep -v LowQual | bgzip > all_sample.hq.vcf.gz
-
-        tabix -p vcf all_sample.hq.vcf.gz
-        """
-    }
-
-
-    /*
-    * snpeff for combined vcf
-    */
-    process snpEff_for_all {
-
-        publishDir "${params.outdir}/${params.proj_name}/result/snp/", mode: 'copy'
-
-        when:
-        params.snpEff_db
-
-        input:
-        file vcf from all_hq_vcf
-        file vcf_idx from all_hq_vcf_idx
-        
-        output:
-        file "all_sample.hq.vcf.stat.csv"
-        file "all_sample.hq.vcf.stat.html" 
-        file "all_sample.ann.vcf.gz" into all_sample_anno_vcf
-        file "all_sample.ann.vcf.gz.tbi" into all_sample_anno_vcf_idx
-        
-        script:
-        """
-        java -Xmx10g -jar ${params.snpEff}/snpEff.jar \\
-            -c ${params.snpEff}/snpEff.config \\
-            -csvStats all_sample.hq.vcf.stat.csv \\
-            -htmlStats all_sample.hq.vcf.stat.html \\
-            -v ${params.snpEff_db}  \\
-            ${vcf} \\
-            | bgzip > all_sample.ann.vcf.gz
-        
-        tabix -p vcf all_sample.ann.vcf.gz
-        """
-    }
-
-    /*
-    * SNP Table
-    */
-    process snp_table {
-
-        publishDir "${params.outdir}/${params.proj_name}/result/snp/", mode: 'copy'
-
-        input:
-        file vcf from all_sample_anno_vcf
-        file vcf_idx from all_sample_anno_vcf_idx
-        file refer from fasta
-        file refer_fai from fai_idx
-        file refer_dict from fa_dict  
-
-        output:
-        file "all_sample.vcf.table.txt" into om_vcf_table
-
-        script:
-        """
-        gunzip -c ${vcf} > ${vcf.baseName}
-
-        python /public/scripts/Reseq/omtools/extractTableFromsnpEff.py \\
-            -v ${vcf.baseName} \\
-            -o all_sample.vcf.table.txt
-        """
-    }
-
+} else {
+    haplotype_beds = 'none'
+    combine_gvcf_beds = 'none'
 }
 
+/*
+* Reads mark duplication and recalibration
+*/
+process bam_remove_duplicate {
+    tag "${sample_name}"
+
+    publishDir "${params.outdir}/${params.proj_name}/data/bam/${sample_name}", mode: 'copy'
+
+    input:
+    file bam from bam_snp
+
+    when:
+    params.snp
+
+    output:
+    file "${sample_name}.rmdup.bam" into br_rmdup_bam
+
+    cpus = 8
+
+    script:
+    sample_name = bam.baseName - '.sorted'
+    """
+    samtools markdup -r -s \\
+        --threads ${task.cpus} \\
+        ${bam} \\
+        ${sample_name}.rmdup.bam
+    """
+}
+
+process SplitNCigarReads {
+
+    tag "${sample_name}"
+        
+    input:
+    file bam from br_rmdup_bam
+    file fasta from fasta
+    file fa_dict from fa_dict
+    file fai_idx from fai_idx
+
+    when:
+    params.snp    
+    
+    output:
+    file "${sample_name}.SplitN.bam" into splitn_bam
+
+    cpus = 8
+    
+    script:
+    sample_name = bam.baseName - '.rmdup'
+    """
+    gatk SplitNCigarReads \\
+        --reference ${fasta} \\
+        --input ${bam} \\
+        --output ${sample_name}.SplitN.bam \\
+        --max-reads-in-memory 1000000  \\
+    """
+}
+
+/*
+*  GATK HaplotypeCaller
+*/
+process gatk_HaplotypeCaller {
+    tag "${sample_name}|${chr_name}"
+
+    input:
+    file bam from splitn_bam
+    each file(bed) from haplotype_beds
+    file refer from fasta
+    file refer_fai from fai_idx
+    file refer_dict from fa_dict 
+
+    when:
+    params.snp
+
+    output:
+    file "${sample_name}.${chr_name}.hc.g.vcf.gz" into sample_gvcf
+    file "${sample_name}.${chr_name}.hc.g.vcf.gz.tbi" into sample_gvcf_index
+    
+    cpus = 8
+
+    script:
+    sample_name = bam.baseName - '.SplitN'
+    chr_name = bed.baseName
+    """
+    gatk HaplotypeCaller  \\
+        --input ${bam} \\
+        --output ${sample_name}.${chr_name}.hc.g.vcf.gz \\
+        --reference ${refer} \\
+        --intervals ${bed} \\
+        --emit-ref-confidence GVCF \\
+        --read-filter AmbiguousBaseReadFilter \\
+        --read-filter MappingQualityReadFilter \\
+        --read-filter NonZeroReferenceLengthAlignmentReadFilter \\
+        --read-filter ProperlyPairedReadFilter \\
+        --minimum-mapping-quality 30         
+    """
+}
+
+/*
+* GATK CombineGVCFs
+*/
+process gatk_CombineGVCFs {
+    tag "Chrom: ${chr_name}"
+
+    publishDir "${params.outdir}/${params.proj_name}/data/snp/gvcf/", mode: 'copy'  
+
+    input:
+    file ('gvcf/*') from sample_gvcf.collect()
+    file ('gvcf/*') from sample_gvcf_index.collect()
+    each file(bed) from combine_gvcf_beds
+    file refer from fasta
+    file refer_fai from fai_idx
+    file refer_dict from fa_dict 
+
+    when:
+    params.snp    
+    
+    output:
+    file "all_sample.${chr_name}.g.vcf.gz" into merged_sample_gvcf
+    file "all_sample.${chr_name}.g.vcf.gz.tbi" into merged_sample_gvcf_index
+    
+    script:
+    chr_name = bed.baseName
+    """
+    ls gvcf/*.${chr_name}.hc.g.vcf.gz > ${chr_name}.gvcf.list
+
+    gatk CombineGVCFs \\
+        --output all_sample.${chr_name}.g.vcf.gz \\
+        --reference ${refer} \\
+        --variant ${chr_name}.gvcf.list
+    """
+}
+
+/*
+* GATK GenotypeGVCFs
+*/
+process gatk_GenotypeGVCFs {
+    tag "Chrom: ${chr_name}"
+
+    publishDir "${params.outdir}/${params.proj_name}/data/snp/vcf/", mode: 'copy'
+
+    input:
+    file gvcf from merged_sample_gvcf
+    file gvcf_index from merged_sample_gvcf_index
+    file refer from fasta
+    file refer_fai from fai_idx
+    file refer_dict from fa_dict  
+
+    when:
+    params.snp      
+    
+    output:
+    file "${vcf_prefix}.vcf.gz" into merged_sample_vcf
+    file "${vcf_prefix}.vcf.gz.tbi" into merged_sample_vcf_index
+    
+    script:
+    vcf_prefix = gvcf.baseName - '.g.vcf'
+    chr_name = vcf_prefix - 'all_sample.'
+    """
+    gatk GenotypeGVCFs \\
+        --reference ${refer} \\
+        --variant ${gvcf} \\
+        --output ${vcf_prefix}.vcf.gz
+    """
+}
+
+/*
+* Concat vcf
+*/
+process concat_vcf {
+
+    publishDir "${params.outdir}/${params.proj_name}/result/snp/", mode: 'copy'   
+
+    input:
+    file ('vcf/*') from merged_sample_vcf.collect()
+    file ('vcf/*') from merged_sample_vcf_index.collect()
+
+    when:
+    params.snp    
+
+    output:
+    file "all_sample.raw.vcf.gz" into all_sample_raw_vcf
+    file "all_sample.raw.vcf.gz.tbi" into all_sample_raw_vcf_idx
+    
+    script:
+    """
+    bcftools concat \\
+        vcf/*.vcf.gz | \\
+        bgzip > all_sample.raw.vcf.gz
+
+    tabix -p vcf all_sample.raw.vcf.gz
+    """
+}
+
+/*
+* Basic quality filter
+*/
+process vcf_base_qual_filter {
+
+    publishDir "${params.outdir}/${params.proj_name}/result/snp/", mode: 'copy'   
+
+    input:
+    file raw_vcf from all_sample_raw_vcf
+    file raw_vcf_idx from all_sample_raw_vcf_idx
+
+    when:
+    params.snp    
+    
+    output:
+    file "all_sample.hq.vcf.gz" into all_hq_vcf
+    file "all_sample.hq.vcf.gz.tbi" into all_hq_vcf_idx
+    
+    script:
+    """
+    bcftools filter -s LowQual -e '%QUAL<${params.snp_quality} || INFO/DP<${params.snp_depth}' \\
+        all_sample.raw.vcf.gz | \\
+        grep -v LowQual | bgzip > all_sample.hq.vcf.gz
+
+    tabix -p vcf all_sample.hq.vcf.gz
+    """
+}
+
+
+/*
+* snpeff for combined vcf
+*/
+process snpEff_for_all {
+
+    publishDir "${params.outdir}/${params.proj_name}/result/snp/", mode: 'copy'
+
+    when:
+    params.snp && params.snpEff_db
+
+    input:
+    file vcf from all_hq_vcf
+    file vcf_idx from all_hq_vcf_idx
+    
+    output:
+    file "all_sample.hq.vcf.stat.csv"
+    file "all_sample.hq.vcf.stat.html" 
+    file "all_sample.ann.vcf.gz" into all_sample_anno_vcf
+    file "all_sample.ann.vcf.gz.tbi" into all_sample_anno_vcf_idx
+    
+    script:
+    """
+    java -Xmx10g -jar ${params.snpEff}/snpEff.jar \\
+        -c ${params.snpEff}/snpEff.config \\
+        -csvStats all_sample.hq.vcf.stat.csv \\
+        -htmlStats all_sample.hq.vcf.stat.html \\
+        -v ${params.snpEff_db}  \\
+        ${vcf} \\
+        | bgzip > all_sample.ann.vcf.gz
+    
+    tabix -p vcf all_sample.ann.vcf.gz
+    """
+}
+
+/*
+* SNP Table
+*/
+process snp_table {
+
+    publishDir "${params.outdir}/${params.proj_name}/result/snp/", mode: 'copy'
+
+    input:
+    file vcf from all_sample_anno_vcf
+    file vcf_idx from all_sample_anno_vcf_idx
+    file refer from fasta
+    file refer_fai from fai_idx
+    file refer_dict from fa_dict  
+
+    when:
+    params.snp && params.snpEff_db
+
+    output:
+    file "all_sample.vcf.table.txt" into om_vcf_table
+
+    script:
+    """
+    gunzip -c ${vcf} > ${vcf.baseName}
+
+    python /public/scripts/Reseq/omtools/extractTableFromsnpEff.py \\
+        -v ${vcf.baseName} \\
+        -o all_sample.vcf.table.txt
+    """
+}
+
+result_dir = file("${params.outdir}/${params.proj_name}/")
+process report {
+
+    input:
+    file ("fastp_html/*") from fastp_html.collect()
+    file ('snp/*') from om_vcf_table.collect().ifEmpty([])
+    file ('rmats/*') from rmats_plot.collect().ifEmpty([])
+    file sequencing_saturation from sequencing_saturation
+    file genebody_coverage from genebody_coverage
+    file ('transfactor/*') from tf_stats.collect().ifEmpty([])
+    file ('ppi/*') from ppi_out.collect().ifEmpty([])
+    file ('kegg/*') from kegg_pathway_out.collect()
+    file ('go/*') from go_barplot.collect()
+    file ('quant/*') from diff_summary_out.collect()
+    file ('novel_gene/*') from novel_gene_out.collect()
+    file result_dir from result_dir
+
+    output:
+    file "${result_dir}/report.pdf"
+    script:
+    """
+    #!/bin/bash
+
+   
+    source /usr/bin/virtualenvwrapper.sh
+    workon oms_nf
+
+    nfRnaReport ${result_dir} --pdf
+    """
+}
